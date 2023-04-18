@@ -1,56 +1,75 @@
-import { Context, Devvit, UserContext, PostContextActionEvent } from '@devvit/public-api';
+import {
+  Context,
+  ContextActionEvent,
+  Devvit,
+  RedditAPIClient,
+  UserContext,
+} from "@devvit/public-api";
+import { Metadata } from "@devvit/protos";
+
 const reddit = new RedditAPIClient();
 
+/**
+ * Fetch the current strike count for the author
+ */
+async function getWinner(comments: any) {
+  const winnerIndex = Math.floor(Math.random() * comments.length);
 
-async function fetchCommenters(reddit: any, postId: string) {
-  try {
-    const post = await reddit.getSubmission(postId).fetch();
-    const commentAuthors = new Set<string>();
+  // Get the winning comment from the comments array
+  const winner = comments[winnerIndex];
 
-    await post.expandReplies({ limit: Infinity, depth: Infinity });
-    post.comments.forEach((comment: any) => {
-      commentAuthors.add(comment.author.name);
-    });
+  const input = winner.id;
+  const parts = input.split("_");
 
-    return Array.from(commentAuthors);
-  } catch (error) {
-    console.error('Error fetching commenters:', error);
-    throw new Error('Error fetching commenters');
-  }
+  return {
+    author: winner.authorName,
+    comment_id: parts[1],
+  };
 }
 
-Devvit.addAction({
-  context: Context.POST,
-  userContext: UserContext.MODERATOR,
-  name: 'Run Raffle',
-  description: 'Select a winner from the commenters on this post',
-  handler: async (event: PostContextActionEvent & { reddit?: any }) => {
-    if (!event.post?.id) {
-      return { success: false, message: 'Error: Post ID not found' };
-    }
+async function raffle(event: ContextActionEvent, metadata?: Metadata) {
+  // Get some relevant data from the post or comment
+  if (event.context === Context.POST) {
+    const comments = await reddit
+      .getComments(
+        {
+          postId: `${event.post.name}`,
+          limit: 1000,
+          pageSize: 100,
+        },
+        metadata
+      )
+      .all();
 
-    if (!event.reddit) {
-      return { success: false, message: 'Error: Reddit API not available' };
-    }
+    // Generate a random index to select a winner
+    const winningComment = await getWinner(comments);
 
-    try {
-      const commenters = await fetchCommenters(event.reddit, event.post.id);
+    await reddit.submitComment(
+      {
+        id: `${event.post.name}`,
+        text: `u/${winningComment.author} won the Raffle! Comment: ${winningComment.comment_id}`,
+      },
+      metadata
+    );
+  }
 
-      if (commenters.length === 0) {
-        return { success: false, message: 'No comments found on the post' };
-      }
+  return {
+    success: true,
+    message: `Winner Selected. View pinned comment in post.`,
+  };
+}
 
-      const winnerIndex = Math.floor(Math.random() * commenters.length);
-      const winner = commenters[winnerIndex];
-
-      const message = `Raffle winner: ${winner} (Post ID: ${event.post.id})`;
-      console.log(message);
-      return { success: true, message };
-    } catch (error) {
-      console.error('Error running raffle:', error);
-      return { success: false, message: 'Error running raffle' };
-    }
+/**
+ * Declare our custom mod-only actions and add it to Posts and Comments
+ */
+Devvit.addActions([
+  {
+    name: "Run Raffle",
+    description: "Pick a Winner!",
+    context: [Context.POST, Context.COMMENT],
+    userContext: UserContext.MODERATOR,
+    handler: raffle,
   },
-});
+]);
 
 export default Devvit;
